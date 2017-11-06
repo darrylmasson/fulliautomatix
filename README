@@ -1,0 +1,34 @@
+Fulliautomatix readme file
+
+=== Table of contents ===
+
+
+1. Purpose
+
+Fulliautomatix is the software that manages the DAQ of ASTERIX. It is responsible for ensuring data collected from the detector gets pushed off and processed in a timely fashion. Coordination is managed via the RunsDB, which both DAQ (wavedump/kodiaq) and the daemons interface with. For simplest usage, run via cron.
+
+
+2. Usage
+
+fulliautomatix.py [-h] [--transfer] [--process]
+[--reprocess REPROCESS [REPROCESS ...]]
+[--log {debug,info,warning,error,critical}]
+[--run RUN [RUN ...]] [--dry_run]
+
+Fulliautomatix
+
+optional arguments:
+    -h, --help            show this help message and exit
+    --transfer            Transfer data from zinc to cluster
+    --process             Process data
+    --reprocess REPROCESS [REPROCESS ...]
+                          Reprocessed given runs
+    --log {debug,info,warning,error,critical}
+                          Logging level
+    --run RUN [RUN ...]   Specific runs (name or number) to handle. Space-separated list
+    --dry_run             Dry run (don't actually transfer or process anything)
+
+
+3. Runs database
+
+When the DAQ ends a run, it inserts an entry into the DB. Its raw_status will be 'acquired'
