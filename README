@@ -1,34 +1,46 @@
 Fulliautomatix readme file
 
-=== Table of contents ===
-
-
 1. Purpose
 
-Fulliautomatix is the software that manages the DAQ of ASTERIX. It is responsible for ensuring data collected from the detector gets pushed off and processed in a timely fashion. Coordination is managed via the RunsDB, which both DAQ (wavedump/kodiaq) and the daemons interface with. For simplest usage, run via cron.
+Fulliautomatix is the software that does data management for ASTERIX. It is responsible for ensuring data collected from the detector gets pushed off and processed in a timely fashion. Coordination is managed via the runs database, which both DAQ (obelix/kodiaq) and the daemons interface with. For simplest usage, run via cron.
 
 
 2. Usage
 
-fulliautomatix.py [-h] [--transfer] [--process]
+fulliautomatix [-h] [--transfer] [--process]
 [--reprocess REPROCESS [REPROCESS ...]]
 [--log {debug,info,warning,error,critical}]
 [--run RUN [RUN ...]] [--dry_run]
+[--cluster {conte,halstead,rice,brown}]
 
 Fulliautomatix
 
 optional arguments:
     -h, --help            show this help message and exit
-    --transfer            Transfer data from zinc to cluster
+    --transfer            Transfer data from daq to cluster
     --process             Process data
     --reprocess REPROCESS [REPROCESS ...]
-                          Reprocessed given runs
+                          Reprocessed given runs. Planned feature
     --log {debug,info,warning,error,critical}
                           Logging level
     --run RUN [RUN ...]   Specific runs (name or number) to handle. Space-separated list
     --dry_run             Dry run (don't actually transfer or process anything)
+    --cluster {conte,halstead,rice,brown}
+                          Which cluster to process on
 
 
-3. Runs database
+3. Requirements
 
-When the DAQ ends a run, it inserts an entry into the DB. Its raw_status will be 'acquired'
+There are three machines used as part of this program. The "host" machine is where this program runs, the "daq" machine runs the data acquisition, and the "cluster" machine handles data processing. The host machine must have ssh keys to the others; the daq machine must have an ssh key to the cluster. The directory containing the logfiles and job submission files must be mounted for access by the host.
+
+4. How it works
+
+When the daq ends a run, it inserts an entry into the runs DB. Its raw_status will be 'acquired' and its raw_location 'zinc'. The TransferDaemon looks for runs that have not been successfully transferred (raw_location=='zinc') and rsync's those runs to the scratch directory on the specified cluster. Upon successful completion of the rsync command, the raw_location is updated to the location '<cluster>/<username>' and its raw_status to 'ondeck', indicating readiness for processing. If the daq is live when the Daemon attempts to transfer, it does nothing as there are insufficient CPU cycles available while the daq is in operation.
+
+The ProcessDaemon looks for unprocessed runs awaiting processing (raw_status=='ondeck', processed_status!='processed'). For each run it find, it creates a job submission file in the specified location and submits the job for processing on the specified cluster. When the job starts, its processed_status is updated to 'processing'; when the job completes successfully its status is updated to 'processed'. Jobs requiring up to four hours of walltime are submitted to the 'standby' queue; jobs requiring more are submitted to the 'physics' queue.
+
+After data is processed, it is eligible for compression and archiving. Data is automatically compressed, and once sufficient compressed runs are available they are tarred and pushed to Fortress. The raw_status of compressed data is 'compressed' or 'archived', with corresponding raw_location.
+
+5. Setup
+
+The program is designed to run "out of the box," though some paths in the config file may need to be changed if you are installing onto a new system. If you need to be able to use data on scratch spaces owned by different users and on different clusters, all folders will need to have the correct group (one of the 'darkmatter' groups for the default installation) and access modifiers (775 or 770).

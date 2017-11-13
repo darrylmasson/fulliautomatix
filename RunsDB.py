@@ -1,11 +1,14 @@
 import config
 import sqlite3 as sql
+import os
 
 class RunsDB:
     '''Handles runs database access
     '''
     @classmethod
     def Initialize(cls):
+        is not os.path.exists(config.runs_db_address):
+            raise RuntimeError('Runs DB not found?')
         cls.db = sql.connect(config.runs_db_address)
 
     @classmethod

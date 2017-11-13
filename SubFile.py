@@ -8,25 +8,48 @@ ProcessJob = r'''#!/bin/sh
 #PBS -e /depot/darkmatter/apps/asterix/subs/{name}.stderr
 #PBS -o /depot/darkmatter/apps/asterix/subs/{name}.stdout
 
-RAW={raw_data}
-PROCESSED={processed}
-
 date -Iseconds
 
 export PATH=/depot/darkmatter/apps/anaconda3/bin:$PATH
 cd /depot/darkmatter/apps/asterix/daemons
 source ./ThreadsafeActivate asterix
-python UpdateDB.py start {name}
+python UpdateDB.py process start {name}
 
 date -Iseconds
 
-echo "paxer --config {config} --input $RAW --output $PROCESSED"
-paxer --config {config} --input $RAW --output $PROCESSED
+echo "paxer --config {config} --input {raw_data} --output {processed}"
+paxer --config {config} --input {raw_data} --output {processed}
 if [ $? -eq 0 ]; then
-    echo "Success"
-
     cd /depot/darkmatter/apps/asterix/daemons
-    python UpdateDB.py end {name}
+    python UpdateDB.py process end {name}
 fi
+date -Iseconds
+'''
+
+CompressJob = r'''#!/bin/sh
+
+#PBS -l walltime={walltime}
+#PBS -l naccesspolicy={nodeaccess}
+#PBS -l {nodecount}
+#PBS -q {queue}
+#PBS -e /depot/darkmatter/apps/asterix/subs/{name}.stderr
+#PBS -o /depot/darkmatter/apps/asterix/subs/{name}.stdout
+
+date -Iseconds
+
+export PATH=/depot/darkmatter/apps/anaconda3/bin:$PATH
+cd /depot/darkmatter/apps/asterix/daemons
+python UpdateDB.py compress start {name}
+
+cd $RCAC_SCRATCH
+cd asterix/raw
+
+echo "tar --create --file {name}.tar.gz --preserve-permissions --remove-files --verbose --gzip {name}"
+tar --create --file {name}.tar.gz --preserve-permissions --remove-files --verbose --gzip {name}
+if [ $? -eq ]; then
+    cd /depot/darkmatter/app/asterix/daemons
+    python UpdateDB.py compress end {name}
+fi
+
 date -Iseconds
 '''
