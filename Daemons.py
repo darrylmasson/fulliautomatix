@@ -1,89 +1,96 @@
-from subprocess import Popen
+from subprocess import Popen, TimeoutExpired
 import os
 import logging
+import re
+import time
 
 import config
-from RunsDB import RunsDB
 import SubFile
 
 
 class Daemon:
-    '''Daemon base class'''
+    '''Daemon base class
+    '''
     ssh_command = 'ssh {username}@{host} {command}'
-    def __init__(self):
-        self.runs_to_do = []
+    def __init__(self, db, dry=False):
         self.logger = logging.getLogger(__name__)
-        self.dry = False
+        self.dry = dry
+        self.db = db
+        self.cur = self.db.cursor()
 
-    @classmethod
-    def SetCluster(cls, cluster):
-        cls.default_cluster = cluster
+    def __del__(self):
+        #self.db.close()  # we don't open the databse here, so we shouldn't close it here
+        self.cur.close()
 
-    def FindRuns(self):
+    def DoOneRun(self, run):
         raise NotImplementedError()
 
-    def DoOneRun(self, name):
+    def CheckIfDoing(self, run):
         raise NotImplementedError()
 
-    def DoAllRuns(self):
-        self.FindRuns()
-        self.logger.info('%s found %i runs' % (self.__class__.__name__, len(self.runs_to_do)))
-        for name in self.runs_to_do:
-            self.DoOneRun(name)
+    def MakeCall(self, command, timeout=15):
+        proc = Popen(command, **config.popen_args)
+        try:
+            out, err = proc.communicate(timeout=timeout)
+        except TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+        return out, err
 
 class TransferDaemon(Daemon):
-    '''Daemon to move files from daq to cluster
+    '''Daemon to move files from daq to cluster. If it finds a "transferring" run it checks to see how long it's actually been running
     '''
-    rsync_command = 'rsync --quiet --remove-source-files --archive --compress --whole-file -e ssh {source} {dest}'
+    rsync_command = 'rsync --quiet --remove-source-files --archive --compress --whole-file {source} {dest}'
 
-    def FindRuns(self):
-        self.runs_to_do = []
-        if IsDAQLive():
+    def DoOneRun(self, run):
+        if self.IsDAQLive():
             return
-        for row in RunsDB.Select(selection='name,comments', cuts='raw_location==\'zinc\''):
-            if '#DNT' not in row[1].upper():
-                self.runs_to_do.append(row[0])
 
-    def DoOneRun(self, name):
-        transfer_command = self.ssh_command.format(**{
-            'username' : config.whoami,
-            'host' : config.zinc_fqdn,
-            'command' : self.rsync_command.format(source=os.path.join(config.raw_data_daq, name),
-                                                  dest='%s:%s' % (config.cluster_fqdn.format(cluster=self.default_cluster),
-                                                                  config.raw_data_cluster.format(cluster=self.default_cluster,
-                                                                                                 username_first_char=config.whoami[0],
-                                                                                                 username=config.whoami
-                                                                                                 )
-                                                                  )
-                                                 )
-            })
+        name = run
+        transfer_command = self.ssh_command.format(
+            username = config.whoami,
+            host = config.daq_fqdn,
+            command = self.rsync_command.format(source=os.path.join(config.raw_data_daq, name),
+                                                dest=config.raw_data_cluster))
+        rm_command = self.ssh_command.format(
+            username = config.whoami,
+            host = config.daq_fqdn,
+            command = 'rm -rf %s' % os.path.join(config.raw_data_daq, name))
         if self.dry:
             print(transfer_command)
+            print(rm_command)
         else:
             self.logger.info('transferring %s' % name)
-            RunsDB.Update(update='raw_status=\'copying\'', cuts='name==\'%s\'' % name)
-            _, err = Popen(transfer_command, **config.popen_args).communicate()
+            self.cur.execute('UPDATE runs SET raw_status=? WHERE name==?;', ('transferring', name))
+            self.db.commit()
+            oldlog = ''
+            for row in self.cur.execute('SELECT log FROM logs WHERE name==?;', (name,)):
+                oldlog = row['log']
+            self.cur.execute('UPDATE logs SET log=? WHERE name==?;', (oldlog + 'transfer at %i | ' % time.time(), name))
+            self.db.commit()
+            self.logger.debug(transfer_command)
+            _, err = self.MakeCall(transfer_command, timeout=config.max_transfer_time)
             if len(err):
                 self.logger.error('rsync error on %s: %s' % (name, err.decode()))
+                self.cur.execute('UPDATE runs SET raw_status=? WHERE name==?;', ('acquired', name))
+                self.db.commit()
                 return -1
             else:
-                rm_command = self.ssh_command.format(**{'username' : config.whoami,
-                                                        'host' : config.zinc_fqdn,
-                                                        'command' : 'rm -r %s' % os.path.join(config.raw_data_zinc, name)
-                                                     })
-                _, err = Popen(rm_command, **config.popen_args).communicate()
+                self.logger.info('%s tranfser completed, removing' % name)
+                self.cur.execute('UPDATE runs SET raw_status=?,raw_location=? WHERE name==?;', ('ondeck', 'depot', name))
+                self.db.commit()
+                self.logger.debug(rm_command)
+                _, err = self.MakeCall(rm_command)
                 if len(err):
                     self.logger.error('rm error on %s: %s' % (name, err.decode()))
-            self.logger.debug('transferred %s' % name)
-            RunsDB.Update(update='raw_status=\'ondeck\',raw_location=\'%s/%s\'', cuts='name==\'%s\'' % (self.default_cluster, config.whoami, name))
 
         return 0
 
     def IsDAQLive(self):
         command = self.ssh_command.format(username=config.whoami,
-                                          host=config.zinc_fqdn,
+                                          host=config.daq_fqdn,
                                           command = 'top -b -n 1 | grep {daq}'.format(daq=config.daq_software))
-        out, err = Popen(command, **config.popen_args).communicate()
+        out, err = self.MakeCall(command)
         if len(err):
             self.logger.error('Could not check daq status: %s' % err.decode())
             return -1
@@ -92,49 +99,48 @@ class TransferDaemon(Daemon):
             return -1
         return 0
 
+    def CheckIfDoing(self, run):
+        name = run
+        pattern = r'transfer at (?P<then>[0-9]{10})'
+        for row in self.cur.execute('SELECT log FROM logs WHERE name==?;', (name,)):
+            m = re.search(pattern, row['log'])
+            if m is None:
+                self.logger.error('%s isn\'t transferring?? Log %s' % (name,row['log']))
+                return -1
+            if time.time() - int(m.group('then')) >= config.max_transfer_time:
+                return 1  # redo
+        return 0
+
 class ProcessDaemon(Daemon):
     '''Daemon to drop jobs into the cluster for processing
     '''
     qsub_command = 'qsub {subfile}'
 
-    def FindRuns(self):
-        self.runs_to_do = []
-        for row in RunsDB.Select(selection='name,events,source,raw_location,comments', cuts='raw_location!=\'zinc\' AND raw_status==\'ondeck\' AND processed_status!=\'processed\''):
-            if '#DNP' not in row[4].upper():
-                self.runs_to_do.append({'name' : row[0],
-                                        'events' : int(row[1]),
-                                        'source' : row[2],
-                                        'location' : {'cluster' : row[3].split('/')[0],
-                                                      'owner' : row[3].split('/')[1]},
-                                        })
-
     def ProcessTime(self, events, source):
         fudge_factor = 1.2
-        rate = 6e4 if source == 'LED' else 1e6/3600 # TODO calibrate
+        rate = 6e4 if source == 'LED' else 3600 # ev/min
         minutes = int(max(events/rate, 5)*fudge_factor)
-        return ('%02i:%02i:00' % (minutes/60, minutes % 60), minutes/60)
+        return '%02i:%02i:00' % (minutes/60, minutes % 60)
 
-    def DoOneRun(self, run_info):
-        filename = os.path.join(config.sub_directory, run_info['name'] + '.sub')
-        walltime_str, walltime_f = self.ProcessTime(run_info['events'], run_info['source'])
-        queue_command = self.ssh_command.format(**{
-            'username' : config.whoami,
-            'host' : config.cluster_fqdn.format(cluster=run_info['location']['cluster']),
-            'command' : self.qsub_command.format(subfile=filename)
-            })
-        sub_file = SubFile.ProcessJob.format(**{
-                    'name' : run_info['name'],
-                    'walltime' : walltime_str,
-                    'queue' : 'standby' if walltime_f < 4.0 else 'physics',
-                    'nodecount' : 'nodes=1:ppn=1',
-                    'nodeaccess' : 'shared',
-                    'config' : 'ASTERIX_LED' if run_info['source'] == 'LED' else 'ASTERIX',
-                    'raw_data' : '%s' % os.path.join(config.raw_data_cluster.format(cluster=run_info['location']['cluster'],
-                                                                                    username_first_char=run_info['location']['owner'][0],
-                                                                                    username=run_info['location']['owner']),
-                                                     run_info['name']),
-                    'processed' : '%s' % os.path.join(config.processed_directory, run_info['name']),
-                })
+    def DoOneRun(self, run):
+        info = run
+        filename = os.path.join(config.sub_directory, info['name'] + '.sub')
+        walltime_str = self.ProcessTime(info['events'], info['source'])
+        queue_command = self.ssh_command.format(
+            username = config.whoami,
+            host = config.cluster_fqdn.format(cluster=config.cluster),
+            command = self.qsub_command.format(subfile=filename)
+        )
+        sub_file = SubFile.ProcessJob.format(
+                    name = info['name'],
+                    walltime = walltime_str,
+                    queue = 'darkmatter',
+                    nodecount = 'nodes=1:ppn=1',
+                    nodeaccess = 'shared',
+                    config = 'ASTERIX_LED' if info['source'] == 'LED' else 'ASTERIX',
+                    raw_data = '%s' % os.path.join(config.raw_data_cluster, info['name']),
+                    processed = '%s' % os.path.join(config.processed_directory, info['name']),
+                )
         if self.dry:
             print(sub_file)
             print(queue_command)
@@ -142,60 +148,33 @@ class ProcessDaemon(Daemon):
             self.logger.debug('Making subfile %s' % filename)
             with open(filename, 'w') as f:
                 f.write(sub_file)
-            self.logger.info('queueing %s' % run_info['name'])
-            RunsDB.Update(update='processed_status=\'queueing\'', cuts='name==\'%s\'' % run_info['name'])
-            _, err = Popen(queue_command, **config.popen_args).communicate()
+            self.logger.info('queueing %s' % info['name'])
+            self.cur.execute('UPDATE runs SET processed_status=? WHERE name==?;', ('queueing', info['name']))
+            self.db.commit()
+            out, err = self.MakeCall(queue_command)
             if len(err):
-                self.logger.error('Error queueing %s: %s' % (run_info['name'], err.decode()))
+                self.logger.error('Error queueing %s: %s' % (info['name'], err.decode()))
                 return -1
         return 0
 
-class CompressDaemon(Daemon):
-    '''Daemon to handle compressing data
-    '''
-
-    def FindRuns(self):
-        self.runs_to_do = []
-        for row in RunsDB.Select(selection='name,raw_location,raw_size', cuts='raw_status==\'compressing\' OR raw_status==\'ondeck\' AND processed_status==\'processed\''):
-            self.runs_to_do.append({'name' : row[0],
-                                    'location' : row[1],
-                                    'size' : row[2],})
-
-    def CompressTime(self, size):
-        fudge_factor = 1.2
-        size_mult = {'M' : 1/1024,
-                     'G' : 1,
-                     'T' : 1024,}
-        rate = 0.6  # gzip does 10 MB/s = 0.6 GB/min
-        minutes = int(float(size[:-1])*size_mult[size[-1]]/rate * fudge_factor)
-        return ('%02i:%02i:00' % (minutes/60, minutes % 60), minutes/60)
-
-    def DoOneRun(self, run_info):
-        filename = os.path.join(config.sub_directory, run_info['name'] + '.sub')
-        walltime_str, walltime_f = self.CompressTime(run_info['size'])
-        queue_command = self.ssh_command.format(**{
-            'username' : config.whoami,
-            'host' : config.cluster_fqdn.format(cluster=run_info['location']['cluster']),
-            'command' : self.qsub_command.format(subfile=filename)
-            })
-        sub_file = SubFile.CompressJob.format(**{
-                    'name' : run_info['name'],
-                    'walltime' : walltime_str,
-                    'queue' : 'standby' if walltime_f < 4.0 else 'physics',
-                    'nodecount' : 'nodes=1:ppn=1',
-                    'nodeaccess' : 'shared',
-                })
-        if self.dry:
-            print(sub_file)
-            print(queue_command)
-        else:
-            self.logger.debug('Making subfile %s' % filename)
-            with open(filename, 'w') as f:
-                f.write(sub_file)
-            self.logger.info('queueing %s' % run_info['name'])
-            RunsDB.Update(update='processed_status=\'queueing\'', cuts='name==\'%s\'' % run_info['name'])
-            _, err = Popen(queue_command, **config.popen_args).communicate()
-            if len(err):
-                self.logger.error('Error queueing %s: %s' % (run_info['name'], err.decode()))
+    def CheckIfDoing(self, run):
+        pattern = r'processing at (?P<when>[0-9]{10}) on (?P<where>[a-z]+) by (?P<who>[a-z]+)'
+        for row in self.cur.execute('SELECT log FROM logs WHERE name==?;', (run['name'],)):
+            m = re.search(pattern, row['log'])
+            if m is None:
+                self.logger.error('%s isn\'t processing?? Log %s' % (run['name'],row['log']))
                 return -1
+            command = self.ssh_command.format(
+                username = config.whoami,
+                host = m.group('where'),
+                command = 'qstat -u %s | grep %s' % (m.group('who'), run['name']))
+            self.log.debug(command)
+            out, err = self.MakeCall(command)
+            if len(err):
+                self.logger.error('Error checking %s: %s' % (run['name'], err.decode()))
+                return -1
+            if len(out):
+                self.logger.info('%s still processing' % run['name'])
+            else:
+                return 1
         return 0

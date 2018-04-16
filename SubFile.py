@@ -1,3 +1,6 @@
+'''File containing the submission script templates for processing and archiving
+'''
+
 
 ProcessJob = r'''#!/bin/sh
 
@@ -10,9 +13,9 @@ ProcessJob = r'''#!/bin/sh
 
 date -Iseconds
 
-export PATH=/depot/darkmatter/apps/anaconda3/bin:$PATH
+export PATH=/depot/darkmatter/apps/anaconda3-4.4.0/bin:$PATH
 cd /depot/darkmatter/apps/asterix/daemons
-source ./ThreadsafeActivate asterix
+source /depot/darkmatter/apps/asterix/daemons/ThreadsafeActivate asterix
 python UpdateDB.py process start {name}
 
 date -Iseconds
@@ -37,7 +40,7 @@ CompressJob = r'''#!/bin/sh
 
 date -Iseconds
 
-export PATH=/depot/darkmatter/apps/anaconda3/bin:$PATH
+export PATH=/depot/darkmatter/apps/anaconda3-4.4.0/bin:$PATH
 cd /depot/darkmatter/apps/asterix/daemons
 python UpdateDB.py compress start {name}
 
