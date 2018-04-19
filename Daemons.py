@@ -62,11 +62,7 @@ class TransferDaemon(Daemon):
         else:
             self.logger.info('transferring %s' % name)
             self.cur.execute('UPDATE runs SET raw_status=? WHERE name==?;', ('transferring', name))
-            self.db.commit()
-            oldlog = ''
-            for row in self.cur.execute('SELECT log FROM logs WHERE name==?;', (name,)):
-                oldlog = row['log']
-            self.cur.execute('UPDATE logs SET log=? WHERE name==?;', (oldlog + 'transfer at %i | ' % time.time(), name))
+            self.cur.execute('INSERT INTO logs (name,log) VALUES (?,?);', (name, 'transfer at %i | ' % time.time()))
             self.db.commit()
             self.logger.debug(transfer_command)
             _, err = self.MakeCall(transfer_command, timeout=config.max_transfer_time)
@@ -82,7 +78,7 @@ class TransferDaemon(Daemon):
                 self.logger.debug(rm_command)
                 _, err = self.MakeCall(rm_command)
                 if len(err):
-                    self.logger.error('rm error on %s: %s' % (name, err.decode()))
+                    self.logger.error('Error removing %s: %s' % (name, err.decode()))
 
         return 0
 
@@ -105,7 +101,7 @@ class TransferDaemon(Daemon):
         for row in self.cur.execute('SELECT log FROM logs WHERE name==?;', (name,)):
             m = re.search(pattern, row['log'])
             if m is None:
-                self.logger.error('%s isn\'t transferring?? Log %s' % (name,row['log']))
+                self.logger.error('%s isn\'t transferring?? Log: %s' % (name,row['log']))
                 return -1
             if time.time() - int(m.group('then')) >= config.max_transfer_time:
                 return 1  # redo
@@ -118,7 +114,7 @@ class ProcessDaemon(Daemon):
 
     def ProcessTime(self, events, source):
         fudge_factor = 1.2
-        rate = 6e4 if source == 'LED' else 3600 # ev/min
+        rate = 360*60 if source == 'LED' else 40*60 # ev/min
         minutes = int(max(events/rate, 5)*fudge_factor)
         return '%02i:%02i:00' % (minutes/60, minutes % 60)
 
@@ -149,12 +145,14 @@ class ProcessDaemon(Daemon):
             with open(filename, 'w') as f:
                 f.write(sub_file)
             self.logger.info('queueing %s' % info['name'])
-            self.cur.execute('UPDATE runs SET processed_status=? WHERE name==?;', ('queueing', info['name']))
-            self.db.commit()
             out, err = self.MakeCall(queue_command)
             if len(err):
                 self.logger.error('Error queueing %s: %s' % (info['name'], err.decode()))
                 return -1
+            else:
+                self.cur.execute('UPDATE runs SET processed_status=? WHERE name==?;', ('queueing', info['name']))
+                self.db.commit()
+
         return 0
 
     def CheckIfDoing(self, run):
@@ -162,7 +160,7 @@ class ProcessDaemon(Daemon):
         for row in self.cur.execute('SELECT log FROM logs WHERE name==?;', (run['name'],)):
             m = re.search(pattern, row['log'])
             if m is None:
-                self.logger.error('%s isn\'t processing?? Log %s' % (run['name'],row['log']))
+                self.logger.error('%s isn\'t processing?? Log: %s' % (run['name'],row['log']))
                 return -1
             command = self.ssh_command.format(
                 username = config.whoami,

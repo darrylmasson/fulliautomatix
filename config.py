@@ -11,7 +11,7 @@ cluster_fqdn='{cluster}.rcac.purdue.edu'
 cluster = 'brown'
 
 # username of process owner
-whoami = os.environ['USERNAME'] if 'USERNAME' in os.environ else os.environ['USER']
+whoami = os.environ['LOGNAME']
 
 # daq machine name
 daq_fqdn='zinc.physics.purdue.edu'

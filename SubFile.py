@@ -25,6 +25,8 @@ paxer --config {config} --input {raw_data} --output {processed}
 if [ $? -eq 0 ]; then
     cd /depot/darkmatter/apps/asterix/daemons
     python UpdateDB.py process end {name}
+    cd /depot/darkmatter/apps/asterix/subs
+    rm {name}.sub
 fi
 date -Iseconds
 '''

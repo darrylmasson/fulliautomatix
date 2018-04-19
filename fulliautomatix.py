@@ -25,7 +25,7 @@ args = parser.parse_args()
 start_time = time.time()
 max_runtime = 3000
 
-_version = 1.0
+_version = 1.1
 
 def main():
     print('Welcome to Fulliautomatix!')
@@ -48,53 +48,84 @@ def main():
 
     if args.transfer:
         print('Transferring runs...')
-        for row in cur.execute('SELECT name FROM runs WHERE raw_status=?;', ('transferring',)):  # check transfers in progress
-            logging.debug('Checking %s' % row['name'])
-            if transfer_daemon.CheckIfDoing(row['name']):
-                cur.execute('UPDATE runs SET raw_status=? WHERE name=?;', ('acquired',row['name']))
-                db.commit()
+        if args.run:
+            for run in args.run:
+                if '_' not in run:
+                    print('I only deal with run names, what is %s?' % run)
+                for row in cur.execute('SELECT raw_status,raw_location FROM runs WHERE name==?', (run,)):
+                    if 'zinc' not in row['raw_location']:
+                        print('%s isn\'t on zinc, what am I supposed to do with it?' % run)
+                    else:
+                        transfer_daemon.DoOneRun(run)
+        else:
+            for row in cur.execute('SELECT name FROM runs WHERE raw_status=?;', ('transferring',)):  # check transfers in progress
+                logging.debug('Checking %s' % row['name'])
+                if transfer_daemon.CheckIfDoing(row['name']):
+                    cur.execute('UPDATE runs SET raw_status=? WHERE name=?;', ('acquired',row['name']))
+                    db.commit()
 
-        num_runs = 0
-        for row in cur.execute('SELECT count(*) FROM runs WHERE raw_location=? AND raw_status=?;', ('zinc','acquired')): # transfer new stuff
-            num_runs = int(row[0])
-        print('Found %i runs to transfer' % num_runs);
-        while num_runs > 0 and time.time()-start_time < max_runtime:
-            for row in cur.execute('SELECT name FROM runs WHERE raw_location=? AND raw_status=?;', ('zinc','acquired')):
-                transfer_daemon.DoOneRun(row['name'])
+            num_runs = 0
+            select = 'name'
+            requirements = 'raw_location==? AND raw_status==?'
+            values = ('zinc','acquired')
+            for row in cur.execute('SELECT count(*) FROM runs WHERE %s' % requirements, values): # transfer new stuff
+                num_runs = int(row[0])
+            print('Found %i runs to transfer' % num_runs);
+            while num_runs > 0 and time.time()-start_time < max_runtime:
+                for row in cur.execute('SELECT %s FROM runs WHERE %s' % (select, requirements), values):
+                    transfer_daemon.DoOneRun(row['name'])
+                    if transfer_daemon.dry:
+                        break
                 if transfer_daemon.dry:
-                    break
-            if transfer_daemon.dry:
-                num_runs = 0
-            else:
-                for row in db.execute('SELECT count(*) FROM runs WHERE raw_location=? AND raw_status=?;', ('zinc','acquired')):
-                    num_runs = int(row[0])
+                    num_runs = 0
+                else:
+                    for row in db.execute('SELECT count(*) FROM runs WHERE %s' % requirements, values):
+                        num_runs = int(row[0])
+    del transfer_daemon
 
     if args.process:
         print('Processing runs...')
-        for row in cur.execute('SELECT name FROM runs WHERE processed_status=?;', ('processing',)):
-            logging.debug('Checking %s' % row['name'])
-            if process_daemon.CheckIfDoing(row['name']):
-                cur.execute('UPDATE runs SET processed_status=? WHERE name=?;', ('none',row['name']))
-                db.commit()
+        if args.run:
+            for run in args.run:
+                if '_' not in run:
+                    print('I only deal with run names, what is %s?' % run)
+                for row in cur.execute('SELECT raw_status,processed_status,name,events,source FROM runs WHERE name==?', (run,)):
+                    if row['raw_status'] != 'ondeck':
+                        print('%s isn\'t on deck, I can\'t process it' % run)
+                    elif row['processed_status'] == 'queueing' or row['processed_status'] == 'processing':
+                        print('%s is already in the processing sequence' % run)
+                    else:
+                        process_daemon.DoOneRun({'name' : row['name'],'events' : int(row['events']), 'source' : row['source']})
+        else:
+            for row in cur.execute('SELECT name FROM runs WHERE processed_status=?;', ('processing',)):
+                logging.debug('Checking %s' % row['name'])
+                if process_daemon.CheckIfDoing(row['name']):
+                    cur.execute('UPDATE runs SET processed_status=? WHERE name=?;', ('none',row['name']))
+                    db.commit()
 
-        num_runs = 0
-        for row in cur.execute('SELECT count(*) FROM runs WHERE raw_location==? AND raw_status==? AND processed_status!=?;', ('depot', 'ondeck', 'processed')):
-            num_runs = int(row[0])
-        print('Found %i runs to process' % num_runs)
-        while num_runs > 0 and time.time()-start_time < max_runtime:
-            for row in cur.execute('SELECT name,events,source FROM runs WHERE raw_location==? AND raw_status==? AND processed_status!=?;', ('depot', 'ondeck', 'processed')):
-                d = {'name' : row['name'],
-                    'events' : int(row['events']),
-                    'source' : row['source'],
-                    }
-                process_daemon.DoOneRun(d)
+            num_runs = 0
+            select = 'name,events,source'
+            requirements = 'raw_location==? AND raw_status==? AND processed_status==?'
+            values=('depot','ondeck','none')
+            for row in cur.execute('SELECT count(*) FROM runs WHERE %s' % requirements, values):
+                num_runs = int(row[0])
+            print('Found %i runs to process' % num_runs)
+            while num_runs > 0 and time.time()-start_time < max_runtime:
+                for row in cur.execute('SELECT %s FROM runs WHERE %s;' % (select, requirements), values):
+                    d = {'name' : row['name'],
+                        'events' : int(row['events']),
+                        'source' : row['source'],
+                        }
+                    process_daemon.DoOneRun(d)
+                    if process_daemon.dry:
+                        break
                 if process_daemon.dry:
-                    break
-            if process_daemon.dry:
-                num_runs = 0
-            else:
-                for row in cur.execute('SELECT count(*) FROM runs WHERE raw_location!=? AND raw_status==? AND processed_status!=?;', ('zinc', 'ondeck', 'processed')):
-                    num_runs = int(row[0])
+                    num_runs = 0
+                else:
+                    for row in cur.execute('SELECT count(*) FROM runs WHERE %s;' % requirements, values):
+                        num_runs = int(row[0])
+    del process_daemon
+
     cur.close()
     db.close()
 
