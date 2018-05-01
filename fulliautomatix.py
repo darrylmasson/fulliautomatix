@@ -14,8 +14,6 @@ import Daemons
 parser = argparse.ArgumentParser(description='Fulliautomatix')
 parser.add_argument('--transfer', action='store_true', help='Transfer data from daq to cluster')
 parser.add_argument('--process', action='store_true', help='Process data')
-#parser.add_argument('--compress', action='store_true', help='Compress raw data')
-#parser.add_argument('--reprocess', action='store_true', help='Reprocessed given runs. Not yet implemented')
 parser.add_argument('--log', default='info', type=str, choices=['debug','info','warning','error','critical'], help='Logging level, default \'info\'')
 parser.add_argument('--run', nargs='+', help='Specific runs (name or number) to handle. Space-separated list')
 parser.add_argument('--dry_run', action='store_true', help='Dry run (don\'t actually transfer or process anything)')
@@ -90,10 +88,13 @@ def main():
                 if '_' not in run:
                     print('I only deal with run names, what is %s?' % run)
                 for row in cur.execute('SELECT raw_status,processed_status,name,events,source FROM runs WHERE name==?', (run,)):
+                    print(row['name'])
                     if row['raw_status'] != 'ondeck':
                         print('%s isn\'t on deck, I can\'t process it' % run)
-                    elif row['processed_status'] == 'queueing' or row['processed_status'] == 'processing':
-                        print('%s is already in the processing sequence' % run)
+                    elif row['processed_status'] == 'queueing' and process_daemon.CheckIfDoing(row):
+                        print('%s is currently queueing' % run)
+                    elif row['processed_status'] == 'processing' and process_daemon.CheckIfDoing(row):
+                        print('%s is currently processing' % run)
                     else:
                         process_daemon.DoOneRun({'name' : row['name'],'events' : int(row['events']), 'source' : row['source']})
         else:
