@@ -16,7 +16,7 @@ date -Iseconds
 export PATH=/depot/darkmatter/apps/anaconda3-4.4.0/bin:$PATH
 cd /depot/darkmatter/apps/asterix/daemons
 source /depot/darkmatter/apps/asterix/daemons/ThreadsafeActivate asterix
-python UpdateDB.py process start {name}
+python UpdateDB.py start {name} $PBS_JOBID
 
 date -Iseconds
 
@@ -24,10 +24,13 @@ echo "paxer --config {config} --input {raw_data} --output {processed}"
 paxer --config {config} --input {raw_data} --output {processed}
 if [ $? -eq 0 ]; then
     cd /depot/darkmatter/apps/asterix/daemons
-    python UpdateDB.py process end {name}
-    cd /depot/darkmatter/apps/asterix/subs
-    rm {name}.sub
+    python UpdateDB.py end {name}
+else
+    cd /depot/darkmatter/apps/asterix/daemons
+    python UpdateDB.py fail {name}
 fi
+cd /depot/darkmatter/apps/asterix/subs
+rm {name}.sub
 date -Iseconds
 '''
 

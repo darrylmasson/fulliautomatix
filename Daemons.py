@@ -3,6 +3,7 @@ import os
 import logging
 import re
 import time
+from numpy import clip
 
 import config
 import SubFile
@@ -115,7 +116,8 @@ class ProcessDaemon(Daemon):
     def ProcessTime(self, events, source):
         fudge_factor = 1.2
         rate = 360*60 if source == 'LED' else 40*60 # ev/min
-        minutes = int(max(events/rate, 5)*fudge_factor)
+        minutes_min, minutes_max = 3, 60*336
+        minutes = clip(events/rate*fudge_factor, minutes_min, minutes_max)
         return '%02i:%02i:00' % (minutes/60, minutes % 60)
 
     def DoOneRun(self, run):
@@ -173,6 +175,7 @@ class ProcessDaemon(Daemon):
                 return -1
             if len(out):
                 self.logger.info('%s still processing' % run['name'])
-            else:
                 return 1
+            else:
+                return 0
         return 0
